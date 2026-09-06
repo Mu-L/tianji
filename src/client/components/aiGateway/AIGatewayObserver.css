@@ -180,6 +180,11 @@
   border-color: color-mix(in oklch, var(--observer-error) 50%, var(--observer-border));
 }
 
+.observer-threshold-button:hover {
+  color: var(--observer-accent);
+  border-color: var(--observer-accent);
+}
+
 .observer-live {
   display: inline-flex;
   flex: 0 0 auto;

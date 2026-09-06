@@ -1,5 +1,12 @@
 import { trpc } from '@/api/trpc';
 import { MarkdownViewer } from '@/components/MarkdownEditor';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { useWindowSize } from '@/hooks/useWindowSize';
 import { useCurrentWorkspaceId } from '@/store/user';
 import {
@@ -16,8 +23,9 @@ import {
 } from '@/components/ui/select';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { t } from '@i18next-toolkit/react';
+import { useLocalStorageState } from 'ahooks';
 import dayjs from 'dayjs';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import {
   LuArrowLeft,
   LuBraces,
@@ -26,9 +34,11 @@ import {
   LuPause,
   LuPlay,
   LuSearch,
+  LuTimer,
   LuTrash2,
   LuWrench,
 } from 'react-icons/lu';
+import { z } from 'zod';
 import type { AIGatewayLogItem } from './AIGatewayLogDetail';
 import './AIGatewayObserver.css';
 
@@ -50,9 +60,22 @@ interface DisplayMessage {
 }
 
 const statusFilters: StatusFilter[] = ['All', 'Success', 'Failed', 'Pending'];
+const latencyThresholdSchema = z
+  .object({ warning: z.number().positive(), error: z.number().positive() })
+  .refine(({ warning, error }) => error > warning);
+type LatencyThresholds = z.infer<typeof latencyThresholdSchema>;
+const defaultLatencyThresholds: LatencyThresholds = { warning: 4, error: 8 };
 
 export function AIGatewayObserver({ gatewayId }: { gatewayId: string }) {
   const workspaceId = useCurrentWorkspaceId();
+  const [storedLatencyThresholds, setLatencyThresholds] =
+    useLocalStorageState<LatencyThresholds>(
+      `tianji-observer-latency-${workspaceId}-${gatewayId}`,
+      { defaultValue: defaultLatencyThresholds }
+    );
+  const latencyThresholds = latencyThresholdSchema
+    .catch(defaultLatencyThresholds)
+    .parse(storedLatencyThresholds);
   const navigate = useNavigate();
   const { width } = useWindowSize();
   const compact = width <= 1080;
@@ -213,6 +236,11 @@ export function AIGatewayObserver({ gatewayId }: { gatewayId: string }) {
           />
         </label>
 
+        <LatencySettings
+          thresholds={latencyThresholds}
+          onSave={setLatencyThresholds}
+        />
+
         <button
           type="button"
           className="observer-icon-button"
@@ -240,6 +268,7 @@ export function AIGatewayObserver({ gatewayId }: { gatewayId: string }) {
           <ResizablePanel defaultSize={compact ? 48 : 62} minSize={25}>
             <LogStream
               logs={logs}
+              latencyThresholds={latencyThresholds}
               selectedId={selectedLog?.id}
               isLoading={isLoading}
               error={error?.message}
@@ -279,14 +308,110 @@ export function AIGatewayObserver({ gatewayId }: { gatewayId: string }) {
   );
 }
 
+function LatencySettings({
+  thresholds,
+  onSave,
+}: {
+  thresholds: LatencyThresholds;
+  onSave: (thresholds: LatencyThresholds) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [invalid, setInvalid] = useState(false);
+  const errorId = useId();
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(open) => {
+        setOpen(open);
+        setInvalid(false);
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="observer-icon-button observer-threshold-button"
+          title={t('Latency thresholds')}
+          aria-label={t('Latency thresholds')}
+        >
+          <LuTimer />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" aria-label={t('Latency thresholds')}>
+        <form
+          className="grid gap-4"
+          aria-label={t('Latency thresholds')}
+          onSubmit={(event) => {
+            event.preventDefault();
+            const data = new FormData(event.currentTarget);
+            const result = latencyThresholdSchema.safeParse({
+              warning: Number(data.get('warning')),
+              error: Number(data.get('error')),
+            });
+            if (!result.success) {
+              setInvalid(true);
+              return;
+            }
+            onSave(result.data);
+            setOpen(false);
+          }}
+        >
+          <div>
+            <h3 className="font-medium">{t('Latency thresholds')}</h3>
+            <p className="text-muted-foreground mt-1 text-xs">
+              {t(
+                'Colors reflect total request time. Saved for this gateway in this browser.'
+              )}
+            </p>
+          </div>
+          <label className="grid gap-2 text-sm">
+            {t('Yellow at (seconds)')}
+            <Input
+              name="warning"
+              type="number"
+              min="0"
+              step="any"
+              required
+              defaultValue={thresholds.warning}
+              aria-invalid={invalid}
+              aria-describedby={invalid ? errorId : undefined}
+            />
+          </label>
+          <label className="grid gap-2 text-sm">
+            {t('Red at (seconds)')}
+            <Input
+              name="error"
+              type="number"
+              min="0"
+              step="any"
+              required
+              defaultValue={thresholds.error}
+              aria-invalid={invalid}
+              aria-describedby={invalid ? errorId : undefined}
+            />
+          </label>
+          {invalid && (
+            <p id={errorId} role="alert" className="text-destructive text-xs">
+              {t('Enter positive numbers, with red greater than yellow.')}
+            </p>
+          )}
+          <Button type="submit">{t('Save')}</Button>
+        </form>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function LogStream({
   logs,
+  latencyThresholds,
   selectedId,
   isLoading,
   error,
   onSelect,
 }: {
   logs: AIGatewayLogItem[];
+  latencyThresholds: LatencyThresholds;
   selectedId?: string;
   isLoading: boolean;
   error?: string;
@@ -330,9 +455,9 @@ function LogStream({
                 </td>
                 <td
                   className={
-                    log.duration >= 8000
+                    log.duration >= latencyThresholds.error * 1000
                       ? 'is-error'
-                      : log.duration >= 4000
+                      : log.duration >= latencyThresholds.warning * 1000
                         ? 'is-warn'
                         : ''
                   }

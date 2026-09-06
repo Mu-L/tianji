@@ -77,6 +77,7 @@ vi.mock('@/api/trpc', () => ({
 }));
 
 beforeEach(() => {
+  localStorage.clear();
   mocks.data = undefined;
   mocks.input = undefined;
   mocks.t.mockClear();
@@ -96,6 +97,92 @@ test('uses the shared non-native gateway selector', () => {
 
   expect(selector).toHaveTextContent('Primary');
   expect(selector).not.toBeInstanceOf(HTMLSelectElement);
+});
+
+test('applies custom latency boundaries and remembers them for each gateway', () => {
+  mocks.data = {
+    items: [29990, 30000, 60490, 60500].map((duration) =>
+      createLog(`log_${duration}`, `Solicitud ${duration}`, { duration })
+    ),
+  };
+  const { unmount } = render(<AIGatewayObserver gatewayId="gateway_1" />);
+  expect(screen.getByRole('cell', { name: '30.00s' })).toHaveClass('is-error');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Latency thresholds' }));
+  fireEvent.change(screen.getByLabelText('Yellow at (seconds)'), {
+    target: { value: '30' },
+  });
+  fireEvent.change(screen.getByLabelText('Red at (seconds)'), {
+    target: { value: '60.5' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  expect(screen.getByRole('cell', { name: '30.00s' })).toHaveClass('is-warn');
+  const cells = document.querySelectorAll(
+    '.observer-table tbody tr td:nth-child(2)'
+  );
+  expect(Array.from(cells, (cell) => cell.className)).toEqual([
+    'is-error',
+    'is-warn',
+    'is-warn',
+    '',
+  ]);
+  unmount();
+
+  const restored = render(<AIGatewayObserver gatewayId="gateway_1" />);
+  expect(screen.getByRole('cell', { name: '30.00s' })).toHaveClass('is-warn');
+  fireEvent.click(screen.getByRole('button', { name: 'Latency thresholds' }));
+  expect(screen.getByLabelText('Red at (seconds)')).toHaveValue(60.5);
+  restored.unmount();
+
+  mocks.data = {
+    items: [
+      createLog('log_other', 'Otra puerta', {
+        gatewayId: 'gateway_2',
+        duration: 30000,
+      }),
+    ],
+  };
+  render(<AIGatewayObserver gatewayId="gateway_2" />);
+  expect(screen.getByRole('cell', { name: '30.00s' })).toHaveClass('is-error');
+});
+
+test.each([
+  ['', '60'],
+  ['0', '60'],
+  ['-1', '60'],
+  ['60', '30'],
+  ['30', '30'],
+  ['30', '1e309'],
+])('rejects invalid latency thresholds (%s, %s)', (warning, error) => {
+  mocks.data = { items: [createLog('log_1', 'Solicitud', { duration: 8000 })] };
+  render(<AIGatewayObserver gatewayId="gateway_1" />);
+  fireEvent.click(screen.getByRole('button', { name: 'Latency thresholds' }));
+  fireEvent.change(screen.getByLabelText('Yellow at (seconds)'), {
+    target: { value: warning },
+  });
+  fireEvent.change(screen.getByLabelText('Red at (seconds)'), {
+    target: { value: error },
+  });
+  fireEvent.submit(screen.getByRole('form', { name: 'Latency thresholds' }));
+
+  expect(screen.getByRole('alert')).toBeVisible();
+  expect(screen.getByRole('cell', { name: '8.00s' })).toHaveClass('is-error');
+  expect(localStorage.length).toBe(0);
+});
+
+test('uses default latency thresholds when stored values are invalid', () => {
+  localStorage.setItem(
+    'tianji-observer-latency-workspace_1-gateway_1',
+    JSON.stringify({ warning: 60, error: 30 })
+  );
+  mocks.data = {
+    items: [createLog('log_1', 'Solicitud', { duration: 4000 })],
+  };
+  render(<AIGatewayObserver gatewayId="gateway_1" />);
+  expect(screen.getByRole('cell', { name: '4.00s' })).toHaveClass('is-warn');
+  fireEvent.click(screen.getByRole('button', { name: 'Latency thresholds' }));
+  expect(screen.getByLabelText('Yellow at (seconds)')).toHaveValue(4);
 });
 
 test('keeps a request that arrives while the first response is delayed', () => {
